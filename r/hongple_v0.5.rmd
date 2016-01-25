@@ -1,0 +1,313 @@
+---
+title: "hongple_v0.5"
+author: "Joel Lee"
+date: "2015. 9. 16."
+output: html_document
+---
+---
+output:
+html_document:
+toc: yes
+---
+
+##### 초기화 및 대화형 임팔라 접속  
+```{r load, echo=FALSE, results='hide'}
+
+# install.packages("Hmisc")
+# install.packages("RODBC")
+# install.packages("sqldf")
+# install.packages('ggplot2')
+# install.packages("psych")
+# install.packages("rmarkdown")
+# install.packages("cluster")
+# install.packages("fpc")
+
+library("Hmisc")
+library("rmarkdown")
+library("RODBC")
+library("sqldf")
+library(ggplot2)
+library("psych")
+library(cluster)
+library(fpc)
+library(xtable)
+```
+
+```{r echo=FALSE}
+setwd("~/workspace/hongple")
+rm(list = ls())  # clear objects  
+source("executeSQL.R")
+print_desc <- function(df){
+    xt <- xtable(describe(df))
+    print(xt, type="html")
+}
+
+print_summary <- function(df){
+ #   df$ro_y <- sapply(df$ro_y, as.factor)
+ #   df$ceq_rgst_dt <- sapply(df$ceq_rgst_dt, as.factor)
+
+    xt <- xtable(summary(df))
+    print(xt, type="html")
+}
+```
+
+#### 주요 영향요인(센서) 분석  
+
+# 샘플링 표준편차 = 0 인 센서
+6 ems16_pre_fuel_cut_in, C 
+8 ems16_soak_time_error, C
+10 ems16_spk_time_cur, A, 연속형              
+24 fatc11_cf_fatc_autoactivation, C
+28 ems_h12_cf_cdastat, A              
+30 ems_h12_cf_ems_oilchg, C           
+31 ems_h12_cf_ems_etclimpmod, A
+-- 33 ems_h12_cf_ems_uptargr, C          
+-- 34 ems_h12_cf_ems_downtargr, C        
+36 ems_h12_cf_ems_hpresstat, B        
+37 ems_h12_cf_ems_fcopen, C           
+59 esp12_cyl_press_diag, C
+69 tcu12_fuel_cut_tcu, A              
+71 tcu12_idle_up_tcu, A 
+73 tcu12_spk_rtd_tcu, A
+76 ems11_f_n_eng, C, X                   
+79 ems11_tq_cor_stat, C, X
+81 ems11_f_sub_tqi, C, X                 
+89 ems15_qecacc, C                    
+90 ems15_ecfail, B                    
+91 ems15_fa_pv_can, B                 
+93 ems15_state_dc_obd, C              
+94 ems15_inh_dc_obd, C                
+95 ems15_ctr_ig_cyc_obd, C, 연속형
+96 ems15_ctr_cdn_obd, C, 연속형    
+97 ems14_im_autehn, B                 
+102 tcu13_cf_tcu_inhcda, A
+112 ems12_vb_off_act, A              
+
+샘플 데이터 가져오기
+```{r qplot, fig.height=3, fig.width=6, cache=TRUE}
+# 실제값
+df_sample = data.frame(executeSql("select * from vcrm_6442267.rg_log_um_f_rare"))
+test_df <- df_sample[,c(-1:-4)]
+test_df <- test_df[,c(-6,-8,-10,-24,-28,-30,-31,-36,-37,-59,-69,-71,-73,-76,-79,-81,-89:-91,-93:-97,-102,-112)]
+test_df <- test_df[,c(-12,-20,-34,-37,-44,-47,-52,-60,-76,-83,-88)]
+test_df <- na.omit(test_df)
+test_mat <- as.matrix(test_df)
+test_mat_s <- scale(test_mat)
+describe(test_df)
+
+# 기초 통계
+test_df_desc <- describe(test_df)
+#print_desc(test_df)
+#summary(test_df)
+
+# 범주화값
+df_sample2 = data.frame(executeSql("select * from vcrm_6442267.rg_log_um_f16_random"))
+test_df2 <- df_sample2[,c(-1:-4)]
+test_set <- test_df2[test_df2$cnt==1,]
+test_set <- test_set[,c(-1,-2)]
+test_set <- test_set[,c(-6,-8,-10,-24,-28,-30,-31,-36,-37,-59,-69,-71,-73,-76,-79,-81,-89:-91,-93:-97,-102,-112)]
+test_set <- na.omit(test_set)
+test_set_desc <- describe(test_set)
+test_set <- test_set[,c(-12, -20, -34, -37, -44, -47, -52, -60, -76, -83, -86, -88)]
+```
+ 
+
+
+**DTC 데이터 분석**
+```{r}
+
+# 데이터 처리
+dtc_df = data.frame(executeSql("select * from vcrm_6442267.dtc_rt_mnt_um_id where bkdw_cd like 'P%'"))
+dtc_df <- dtc_df[,c(-1:-9)]
+#dtc_desc <- describe(dtc_df)
+dtc_df_f <- dtc_df[,c(-6,-8,-10,-15,-18,-23,-24,-28,-30,-31,-36,-37,-54,-56,-57,-61,-64,-66,-72,-77,-87,-89)]
+dtc_df_f <- na.omit(dtc_df_f)
+#f <- describe(dtc_df_f)
+dtc_mat <- as.matrix(dtc_df_f)
+dtc_mat_s <- scale(dtc_mat)
+
+```
+
+
+**요인 분석(Factor Analysis)**
+```{r}
+#fa.parallel(test_mat_s)
+#Parallel analysis suggests that the number of factors =  24  and the number of components =  22 
+
+#cor_mat <- cor(test_set, use="complete.obs")
+#cov_mat <- cov(test_set, use="complete.obs")
+
+fa.parallel(dtc_mat_s)
+# Parallel analysis suggests that the number of factors =  21  and the number of components =  19 
+
+fit <- fa(dtc_mat_s, nfactors=21)
+#fa.graph(fit)
+fa.diagram(fit)
+plot(fit)
+
+# fit2 <- factanal(dtc_mat_s, factors=20, rotation="varimax")
+# fit2
+
+```
+
+```{r factor, fig.height=4, fig.width=6}
+load <- fit$loadings[,1:16] 
+plot(load,type="n") # set up plot 
+text(load,labels=names(dtc_df_f),cex=.7)
+```
+
+
+**상관 분석**
+```{r}
+
+#시각화
+#library(corrgram)
+#corrgram(test_df, order=TRUE, lower.panel=panel.shade, upper.panel=panel.pie, text.panel=panel.txt,
+#  main="EMS12 Data Correlation")
+
+# Correlations with significance levels
+
+# cor_result <- rcorr(test_mat)
+
+# ++++++++++++++++++++++++++++
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+# flattenCorrMatrix <- function(cormat, pmat) {
+#   ut <- upper.tri(cormat)
+#   data.frame(
+#     row = rownames(cormat)[row(cormat)[ut]],
+#     column = rownames(cormat)[col(cormat)[ut]],
+#     cor  =(cormat)[ut],
+#     p = pmat[ut]
+#     )
+# }
+# cor_result2 <- flattenCorrMatrix(cor_result$r, cor_result$P)
+
+cor_result3 <- cor(dtc_df_f, use = "complete.obs")
+#remove <- "tcu12_spk_rtd_tcu"
+#cor_result3 <- cor_result3[!rownames(cor_result3) %in% remove,!colnames(cor_result3) %in% remove]
+
+#symnum_result <- symnum(cor_result3)
+#write.table(symnum_result, "mydata.csv", sep=",")
+
+# install.packages("corrplot")
+# library(corrplot)
+corrplot(cor_result3, is.corr = FALSE, type="lower", order="hclust", tl.col="black", tl.srt=45)
+
+```
+
+
+**주성분 분석(PCA)**
+```{r pca, fig.height=8, fig.width=8}
+
+#graphics.off() 
+#layout(matrix(c(1,2,3,4),2,2)) # optional 4 graphs/page 
+# 표준편차 0이 아닌 센서만 선별
+
+#test_df <- sensors[,c(1,4,6,8,9,10,11,12)]
+pca = prcomp(dtc_mat, scale=TRUE, retx=TRUE)
+#round(predict(pca),2)
+#png("sensors_pca.png")
+plot(pca, type="l", sub = "Scree Plot")
+biplot(pca)
+#dev.off()
+
+```
+
+
+**회귀 분석**
+```{r}
+dtc_f10 = data.frame(executeSql("select * from vcrm_6442267.dtc_rt_mnt_um_id_47_f10 where bkdw_cd like 'P%'"))
+
+dtc_f10 = data.frame(executeSql("select * from vcrm_6442267.dtc_rt_mnt_um_id_47_f10 where bkdw_cd like 'P%'"))
+
+a <- dtc_f10[,3]
+b <- dtc_f10[,c(-1:-9,-104)]
+c <- cbind(b,a)
+names(c)[95] <- "bkdw_cd"
+
+dtc_f10_f <- c[,c(-6,-8,-10,-15,-18,-23,-24,-28,-30,-31,-36,-37,-54,-56,-57,-61,-64,-66,-72,-77,-87,-89)]
+dtc_f10_f <- na.omit(dtc_f10_f)
+
+dtc_f10_f$flag <- NA
+dtc_f10_f[dtc_f10_f$bkdw_cd == 'P2271',]$flag <- 1;
+dtc_f10_f[dtc_f10_f$bkdw_cd != 'P2271',]$flag <- 0;
+
+dtc_f10_f[dtc_f10_f$bkdw_cd == 'P2196',]$flag <- 1;
+dtc_f10_f[dtc_f10_f$bkdw_cd != 'P2196',]$flag <- 0;
+
+dtc_f10_f[dtc_f10_f$bkdw_cd == 'P0299',]$flag <- 1;
+dtc_f10_f[dtc_f10_f$bkdw_cd != 'P0299',]$flag <- 0;
+
+dtc_f10_f[dtc_f10_f$bkdw_cd == 'P242D',]$flag <- 1;
+dtc_f10_f[dtc_f10_f$bkdw_cd != 'P242D',]$flag <- 0;
+
+dtc_f10_f[dtc_f10_f$bkdw_cd == 'P0192',]$flag <- 1;
+dtc_f10_f[dtc_f10_f$bkdw_cd != 'P0192',]$flag <- 0;
+
+dtc_desc <- describe(dtc_f10_f)
+
+#dtc_f10_f <- subset(dtc_f10_f, grepl("^P", dtc_f10_f$bkdw_cd), drop=FALSE)
+test_set <- dtc_f10_f[,c(-7,-8,-12,-13,-17,-23:-25,-28,-29,-33,-35,-39,-42,-46,-54,-57,-64,-71)]
+
+fmla <- as.formula(paste("flag ~ ", paste(names(test_set[,c(1:53)]),collapse="+")))
+g = glm(fmla, data = test_set, family = binomial(link = "logit"))
+summary(g) # display results
+#P2271 <- g
+#P0299 <- g
+
+confint(g) # 95% CI for the coefficients
+exp(coef(g)) # exponentiated coefficients
+exp(confint(g)) # 95% CI for exponentiated coefficients
+predict(g, type="response") # predicted values
+residuals(g, type="deviance") # residuals
+#coefficients(g)
+#anova(g)
+# diagnostic plots 
+#graphics.off() 
+#layout(matrix(c(1,2,3,4),2,2)) # optional 4 graphs/page 
+#plot(g)
+```
+
+
+**군집 분석**
+```{r}
+# k-means
+cl_result <- kmeans(test_df, iter.max = 1000, centers = 3)
+# DBSCAN
+cl_result <- dbscan(test_df, eps=2, MinPts=5)
+#plotcluster(test_df, km_result$cluster)
+clusplot(test_df, cl_result$cluster, color=TRUE, shade=TRUE, labels=2, lines=0)
+
+# hierachical 
+source("myfunctions.R")
+d <- dist(test_df, method = "euclidean") # distance matrix
+hc <- hclust(d, method="ward.D")
+plot(hc) # display dendogram
+groups <- cutree(hc, k=4) # cut tree into 5 clusters
+# draw dendogram with red borders around the 5 clusters 
+rect.hclust(hc, k=4, border="red")
+```
+
+
+**주요센서 + RO**  
+```{r results="asis"}
+sensor_vin_ro = data.frame(sqlQuery( conn, "select * from vcrm_6442267.factor5_um_vin_ro_ads"))
+print_summary(sensor_vin_ro)
+
+g = lm(ro_cnt ~ vin + id, data = sensor_vin_ro)
+summary(g)
+coefficients(g)
+#anova(g)
+# diagnostic plots 
+#graphics.off() 
+#layout(matrix(c(1,2,3,4),2,2)) # optional 4 graphs/page 
+#plot(g)
+
+```
+
+
+
+

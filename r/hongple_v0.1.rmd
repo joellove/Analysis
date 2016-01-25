@@ -1,0 +1,429 @@
+---
+output:
+  html_document:
+    toc: yes
+---
+---
+title: "Hongple"
+author: "Joel Lee"
+since: "2015. 4. 7."
+output: html_document
+runtime: shiny
+---
+
+ 
+### 가설
+
+```
+초당 센서 값들의 각 조합에 대한 발생빈도를 계산, 발생 확률이 극히 낮거나 처음 발견되는 센서 값의 조합 발생시 이상패턴으로 정의, 탐지 가능하다.
+```
+
+### 대상 데이터 
+
+- 단말사양 : AVN4 RC
+- 국가 : 국내
+- 차종 : UM
+- 종류 : 주기적 운행 로그 (월 1회, vin별 1 trip, 1시간 이내 sample rate : 1 sec.)
+- 테이블 : hkmc_tms.drv_rg_log_ps_avn4_rc
+- 센서 : 227개
+- 기간 : 6개월
+
+
+### 분석 프로세스
+
+```
+연속형센서 범주화 및 기초 통계 -> 이상 패턴 탐색 -> 고장 조기 감지
+```
+
+#### 1. 연속형 센서 범주화 
+연속형 센서의 경우, 센서별 값의 범위를 파악하여 범주형으로 변환하고 불필요한 센서는 제거한다.
+
+ - 클러스터 : 분석계 대화형
+ - 데이터베이스 : vcrm_6442267
+
+
+###### 대화형 임팔라 접속
+```{r}
+setwd("~/workspace/hongple")
+
+# install.packages("Hmisc")
+# install.packages("RODBC")
+# install.packages("sqldf")
+# install.packages('ggplot2')
+# install.packages("psych")
+# install.packages("rmarkdown")
+# install.packages("cluster")
+# install.packages("fpc")
+
+library("Hmisc")
+library( "RODBC" )
+library("sqldf")
+library(ggplot2)
+library("psych")
+library(cluster)
+library(fpc)
+#library("rmarkdown")
+
+rm(list = ls())  # clear objects  
+conn = odbcConnect( "Impala2" )
+sqlQuery( conn, "invalidate metadata" )
+
+```
+
+###### 1차 가공 테이블
+ - drv_rg_log_ps_avn4_rc_seq : 정기 운행로그에 주행별 시퀀스 추가(61,972,965건)
+
+차종  | 레코드수(초당)
+---- | ----
+DM  | 19110538
+UM  | 36321553
+KH  | 106191
+AG  | 6432762
+TL  | 1921
+
+차종 | 주행 횟수 | 최초 주행시간 | 최종 주행시간 | 평균 주행(초수)
+------------ | ---------- | ------------ | ------------- | ---------
+DM  | 12410 | 20141102020436  | 20150405185031  | 1534
+UM  | 24863 | 20141001055302  | 20150405175643  | 1446
+KH  | 78  | 20150111002956  | 20150405095542  | 1361
+AG  | 4655  | 20141111093204  | 20150405104945  | 1379
+TL  | 1 | 20150404181150  | 20150404181150  | 1921
+
+
+###### 샘플 데이터 가져오기
+```{r}
+df_sample = data.frame(sqlQuery( conn, "select * from vcrm_6442267.drv_rg_log_ps_avn4_rc_seq
+                                 where vin = 'KNAPK81ABFA010727' and ignitiontime = '20141211074429'
+                                 order by seq_num"))
+
+qplot(seq_num, ems16_tqi_min, data = df_sample) + geom_smooth()
+#plot(df$seq_num, df$ems16_tqi_min, type="l", ylab="ems16_tqi_min", xlab="time(sec)")
+```
+
+###### 연속형 센서 시계열 탐색
+```{r}
+# timeseries multiple plot
+# par(pch=22, col="red") # plotting symbol and color 
+graphics.off()    # close graphics windows
+# 20 of 227 plots on one page
+par(mfrow=c(5, 4), mar = c(2, 2, 2, 1), oma = c(0, 0, 1, 0)) 
+signals = names(df_sample)
+
+for(i in 218:233){ 
+  signal_ts <- df_sample[,i]
+  plot.ts(signal_ts, type="l", main=signals[i]) 
+}
+
+```
+![multi plot](./plot.ts.png)
+
+###### 2차 가공 테이블
+ - drv_rg_log_ps_avn4_rc_factor : 연속형 센서 범주화 (5개로 설정)
+
+전체 센서들에 대한 조합의 빈도수가 높지 않아 불필요한 센서 제거해야함.
+
+###### NULL 센서 검사
+
+```{r}
+# NA Column check
+for(i in 7:length(signals)){ 
+  if(is.na(df_sample[100, i])){
+    print(names(df_sample)[i])
+  }
+}
+```
+
+###### engfrzfrm12 센서그룹 제외(NULL 만 들어있음)
+
+센서그룹 | 전체 NULL(건수) | 전체 NULL(비율) | UM NULL(건수) | UM NULL(비율)
+---- | ---- | ---- | ---- | ----
+engfrzfrm12 | 61,972,965 | `r 61972965/61972965*100`% | 36,321,553 | 100%
+ems19 | 25,649,491 | `r 25649491/61972965*100`% | 0 | 0%
+fatc11 | 25,650,803 | `r 25650803/61972965*100`% | 1,312 | `r 1312/36321553*100`%
+bat11 | 25,650,996 | `r 25650996/61972965*100`% | 1,505 | `r 1505/36321553*100`%
+cgw1 |  26,613,289 | `r 26613289/61972965*100`%  | 963,797 | `r 963797/36321553*100`%
+
+... ...
+
+###### Checksum 센서 제외
+- ems19_cf_ems_checksumems9
+- ems16_checksum
+- fatc11_cf_fatc_chksum
+- tcu11_cf_tcu_chksum1
+- sas11_checksum
+- tcu12_cf_tcu_chksum
+- tcu13_cf_tcu_chksum3 
+
+
+###### UM 센서 리스트 이외 센서(2014.7.22 기준)
+- ems11_ratio_tqi_bas_max_stnd (SD=0)
+- ems19_cf_ems_brkreq (SD=0)
+- ems19_cf_ems_dnshftreq (SD=0)
+- ems19_cf_ems_aafopenreq (SD=0)
+- ems19_cf_ems_decelreq 
+- ems19_cr_ems_bstpre (SD=0)
+- ems19_cr_ems_engoiltemp (SD=0)
+- ems19_cf_ems_modeledambtemp (SD=0)
+- ems19_cf_ems_opsfail 
+- ems19_cf_ems_alivecounterems9 (X)
+- cgw1_cf_gway_ignsw (CGW1 전부 제거)
+- cgw1_cf_gway_rkecmd 
+- cgw1_cf_gway_drvkeylocksw 
+- cgw1_cf_gway_drvkeyunlocksw 
+- cgw1_cf_gway_drvdrsw 
+- cgw1_cf_gway_drvseatbeltsw 
+- cgw1_cf_gway_trunktgsw 
+- cgw1_cf_gway_astseatbeltsw 
+- cgw1_cf_gway_hoodsw 
+- cgw1_cf_gway_turnsiglh 
+- cgw1_cf_gway_wiperintt 
+- cgw1_cf_gway_wiperintsw 
+- cgw1_cf_gway_wiperlowsw 
+- cgw1_cf_gway_wiperhighsw 
+- cgw1_cf_gway_wiperautosw 
+- cgw1_cf_gway_rainsnsstate (SD=0)
+- cgw1_cf_gway_hazardsw 
+- cgw1_cf_gway_astdrsw 
+- cgw1_cf_gway_defoggerrly 
+- cgw1_cf_gway_alightstat 
+- cgw1_cf_gway_lightswstate 
+- cgw1_cf_gway_frt_fog_act 
+- cgw1_cf_gway_tsiglhsw 
+- cgw1_cf_gway_tsigrhsw 
+- cgw1_cf_gway_drivetypeoption (SD=0)
+- cgw1_cf_gway_passiveaccesslock 
+- cgw1_cf_gway_passiveaccessunlock 
+- cgw1_cf_gway_passingsw (SD=0)
+- cgw1_cf_gway_hlphighsw (SD=0)
+- cgw1_cf_gway_inhibitrmt 
+- cgw1_c_sunroofopenstate 
+- cgw1_cf_gway_parkbrakesw 
+- cgw1_cf_gway_turnsigrh
+- tcu11_tcu_type (X)
+- tcu11_swi_gs 
+- tcu11_gear_type 
+- esp12_yaw_rate (SD=0, 범주화 전에 편차 있음)
+- esp12_yaw_rate_stat 
+- esp12_yaw_rate_diag (SD=0)
+- sas11_sas_speed 
+- sas11_sas_stat (SD=0, 범주화 전에 편차 있음)
+- sas11_msgcount (X)
+- tcu12_n_inc_tcu (SD=0)
+- tcu12_spk_rtd_tcu 
+- tcu12_vs_tcu_decimal 
+- ems11_ratio_tqi_bas_max_stnd 
+- ems15_fa_pv_can (SD=0)
+- ems15_intairtemp 
+- ems15_state_dc_obd (SD=0)
+- ems15_inh_dc_obd (SD=0)
+- ems15_ctr_ig_cyc_obd (SD=0)
+- ems15_ctr_cdn_obd (SD=0)
+- ems14_im_autehn (SD=0)
+- ems14_l_mil 
+- ems14_im_stat (X)
+- ems14_amp_can 
+- ems14_bat_alt_fr_duty (SD=0)
+- ems14_vb (SD=0, X)
+- tcu13_cf_tcu_inhvis (SD=0)
+- tcu13_cf_tcu_prelreq (SD=0)
+- tcu13_cf_tcu_itphase (SD=0)
+- tcu13_cf_tcu_actecordy (SD=0)
+- tcu13_cf_tcu_tqgrdlim (SD=0)
+- tcu13_cr_tcu_isgtgtrpm 
+- tcu13_cf_tcu_sptrdy (X)
+- tcu13_cf_tcu_bkeonreq 
+- tcu13_n_tgt_lup (SD=0)
+
+###### ems, tcu 계열 이외 센서
+- fatc11_cr_fatc_tqacnout 
+- fatc11_cf_fatc_acnrqswi 
+- fatc11_cf_fatc_acncltenrq 
+- fatc11_cf_fatc_ecvflt (SD=0)
+- fatc11_cf_fatc_blwron 
+- fatc11_cf_fatc_iden 
+- fatc11_cf_fatc_blwrmax 
+- fatc11_cf_fatc_engstartreq 
+- fatc11_cf_fatc_isgstopreq 
+- fatc11_cf_fatc_ctrinf 
+- fatc11_cf_fatc_msgcnt 
+- fatc11_cr_fatc_outtemp 
+- fatc11_cr_fatc_outtempsns 
+- fatc11_cf_fatc_compload (SD=0)
+- fatc11_cf_fatc_activeeco (SD=0)
+- fatc11_cf_fatc_autoactivation (SD=0)
+- fatc11_cf_fatc_defsw (SD=0)
+- fatc11_cf_fatc_ptcrlystat (SD=0)
+- bat11_bat_snsr_i 
+- bat11_bat_soc 
+- bat11_bat_snsr_v (O)
+- bat11_bat_snsr_temp 
+- bat11_bat_snsr_state 
+- bat11_bat_soh 
+- bat11_bat_snsr_invalid (SD=0)
+- bat11_bat_sof 
+- bat11_bat_snsr_error 
+- cgw1_cf_gway_smkoption 
+- cgw1_cf_gway_headlamplow 
+- cgw1_cf_gway_headlamphigh 
+- cgw1_cf_gway_starterrlystate 
+- esp12_lat_accel 
+- esp12_lat_accel_stat 
+- esp12_lat_accel_diag (SD=0)
+- esp12_long_accel 
+- esp12_long_accel_stat 
+- esp12_long_accel_diag 
+- esp12_cyl_pres 
+- esp12_cyl_pres_stat 
+- esp12_cyl_press_diag 
+- sas11_sas_angle 
+
+
+###### 3차 가공 테이블 
+ - drv_rg_log_ps_avn4_rc_factor_cnt : 차종별 전체 센서 조합별 빈도수
+
+차종 | 엔진구분 |  동일조합 최대개수 | 동일조합 최소개수 | 레코드 수
+--- | --- | --- | --- | ---
+AG  | G | 26771 | 1 | 188828
+DM  | D | 434649  | 1 | 39757
+KH  | G | 620 | 1 | 17360
+TL  | D | 9 | 1 | 1352
+UM  | D | 29248 | 1 | 3035048
+
+###### 조합 그룹핑한 데이터 가져오기
+```{r}
+sqlQuery( conn, "invalidate metadata")
+df_um_cnt = data.frame(sqlQuery( conn, "select * from vcrm_6442267.drv_rg_log_ps_avn4_rc_factor_um_cnt"))
+
+ggplot(data=df_um, aes(x=sale_vehl_cd, y=cnt)) + guides(fill=F) +
+    geom_boxplot() + stat_boxplot(geom ='errorbar') +
+    ylab('combination count') + xlab('combination') + 
+    ggtitle('Variable Combination Boxplot') 
+#+
+#    geom_jitter(alpha=0.10)
+
+summary_um <- summary(df_um)
+desc_um <- describe(df_um)
+
+```
+
+
+###### 표준편차가 0인 변수 제외(36개)
+- ems16_pre_fuel_cut_in
+- ems16_soak_time_error
+- ems16_spk_time_cur 
+- ems16_cf_ems_aclact
+- ems_h12_sld_vs
+- ems_h12_cf_cdastat
+- ems_h12_cf_ems_oilchg
+- ems_h12_cf_ems_etclimpmod
+- ems_h12_cf_ems_sldact
+- ems_h12_cf_ems_sldposact
+- ems_h12_cf_ems_hpresstat
+- ems_h12_cf_ems_isgbuz
+- ems_h12_cf_ems_idlstpfco
+- ems_h12_cf_ems_fcopen
+- tcu11_tqi_tcu_inc
+- tcu11_f_tcu (O, tcu falut status)
+- tcu11_tcu_obd
+- tcu12_fuel_cut_tcu
+- tcu12_idle_up_tcu
+- ems11_tq_cor_stat
+- ems11_f_sub_tqi
+- ems11_tqfr
+- ems20_fco
+- ems20_cf_ems_pumptpres
+- ems15_qecacc
+- ems15_ecfail
+- ems15_blecfail
+- tcu13_cf_tcu_inhcda
+- tcu13_cf_tcu_sbwpinfo
+- ems12_vb_off_act
+- ems12_od_off_req
+- ems12_eng_chr
+- ems12_eng_vol
+- ems11_swi_igk (O)              
+- ems11_ack_tcs               
+- ems12_maf_fac_alti_mmv     
+- ems11_f_n_eng                  
+
+###### 무의미한 변수 제외
+ - ems16_cruise_lamp_m 
+ - ems16_cruise_lamp_s 
+ - ems16_alivecounter 
+
+```{r}
+# 그룹핑
+#df_um_cnt <- data.frame(table(df_um$sale_vehl_cd, df_um$cnt))
+#names(df_um_cnt) <- c("sale_vehl_cd", "variable", "count")
+
+#qplot(variable, count, data = df_um_cnt) + geom_smooth()
+
+# NULL 레코드 제거
+#df_um_cnt_rm <- df_um_cnt[rowSums(is.na(df_um_cnt)) == 0,]
+df_um_cnt_rm <- df_um_cnt[complete.cases(df_um_cnt),]
+
+# Clustering
+train_df <- df_um_cnt_rm[, 2:72]
+km_result <- kmeans(train_df, iter.max = 1000, centers = 2)
+
+# clustering 결과를 데이터셋에 컬럼 추가
+result_df <- cbind(df_um_cnt_rm, cluster = km_result$cluster)
+nrow(subset(result_df, result_df$cluster==1))
+3274574/4612177
+
+cluster_1_df = subset(result_df, result_df$cluster==1)
+cluster_2_df = subset(result_df, result_df$cluster==2)
+
+ggplot(data=cluster_1_df, aes(x=sale_vehl_cd, y=cnt)) + guides(fill=F) +
+    geom_boxplot() + stat_boxplot(geom ='errorbar') +
+    ylab('combination count') + xlab('combination') + 
+    ggtitle('Variable Combination Boxplot')
+
+describe(cluster_1_df$cnt)
+summary(cluster_1_df$cnt)
+
+ggplot(data=cluster_2_df, aes(x=sale_vehl_cd, y=cnt)) + guides(fill=F) +
+    geom_boxplot() + stat_boxplot(geom ='errorbar') +
+    ylab('combination count') + xlab('combination') + 
+    ggtitle('Variable Combination Boxplot') 
+
+describe(cluster_2_df$cnt)
+summary(cluster_2_df$cnt)
+
+nrow(subset(df_um_cnt_rm, df_um_cnt_rm$cnt==1))
+2796670/4611999
+nrow(subset(cluster_1_df, cluster_1_df$cnt==1))
+1974623/3274574
+nrow(subset(cluster_2_df, cluster_2_df$cnt==1))
+822047/1337425
+
+summary(df_um_cnt_rm)
+
+# 시각화
+#plotcluster(result_df, km_result$cluster)
+```
+
+###### 차원 축소
+```{r}
+
+# all columns convert to numeric data type
+# x = sapply(df_factanal_rm, as.numeric)
+# x <- as.data.frame(x)
+
+# 주성분 분석
+par(mar=c(5,6,4,2))
+pca <- fa.parallel(df_factanal_rm[sample(nrow(df_factanal_rm), 100000),-1])
+
+# 요인 분석
+# fit <- factanal(df_factanal_rm, 9, rotation="promax") 
+# fit
+
+odbcClose(conn)
+```
+
+
+
+
+
+
+

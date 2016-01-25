@@ -1,0 +1,297 @@
+---
+title: "Hongple"
+author: "Joel Lee"
+since: "2015. 4. 7."
+output: html_document
+runtime: shiny
+---
+
+ 
+### 가설
+
+```
+ 정기 운행로그의 다변량 변수들의 구간 조합에서 거의 발생하지 않는 조합을 이상치로 가정하고
+ 그 이상치를 분석하여 차량의 고장을 조기 감지하고 원인을 분석할 수 있다.
+```
+
+### 대상 데이터 
+
+- 단말사양 : AVN4 RC
+- 국가 : 국내
+- 차종 : UM
+- 종류 : 주기적 운행 로그 (월 1회, vin별 1 trip, 1시간 이내 sample rate : 1 sec.)
+- 테이블 : hkmc_tms.drv_rg_log_ps_avn4_rc
+- 변수 : 227개
+- 기간 : 6개월
+
+
+### 분석 프로세스
+
+```
+정기운행로그 범주화 -> 이상 패턴 탐색 -> 고장 조기 감지
+```
+
+#### 1. 정기운행로그 범주화 
+연속형 변수의 경우, 변수별 값의 범위를 파악하여 범주형으로 변환하고 불필요한 변수는 제거한다.
+
+ - 클러스터 : 분석계 대화형
+ - 데이터베이스 : vcrm_6442267
+
+
+###### 대화형 임팔라 접속
+```{r}
+setwd("~/workspace/hongple")
+
+rm(list = ls())  # clear objects  
+library( "RODBC" )
+library("sqldf")
+conn = odbcConnect( "Impala2" )
+sqlQuery( conn, "invalidate metadata" )
+```
+
+###### 1차 가공 테이블
+ - drv_rg_log_ps_avn4_rc_seq : 정기 운행로그에 주행별 시퀀스 추가(61,972,965건)
+
+차종  | 레코드수(초당)
+---- | ----
+DM  | 19110538
+UM  | 36321553
+KH  | 106191
+AG  | 6432762
+TL  | 1921
+
+차종 | 엔진구분 | 주행 횟수 | 최초 주행시간 | 최종 주행시간 | 평균 주행(초수)
+------------ | ---------- | ------------ | ------------- | ---------
+DM  | 12410 | 20141102020436  | 20150405185031  | 1534
+UM  | 24863 | 20141001055302  | 20150405175643  | 1446
+KH  | 78  | 20150111002956  | 20150405095542  | 1361
+AG  | 4655  | 20141111093204  | 20150405104945  | 1379
+TL  | 1 | 20150404181150  | 20150404181150  | 1921
+
+
+###### 샘플 데이터 가져오기
+```{r, qplot, fig.width=4, fig.height=3, message=FALSE}
+df_sample = data.frame(sqlQuery( conn, "select * from vcrm_6442267.drv_rg_log_ps_avn4_rc_seq
+                                 where vin = 'KNAPK81ABFA010727' and ignitiontime = '20141211074429'
+                                 order by seq_num"))
+#install.packages('ggplot2')
+library(ggplot2)
+qplot(seq_num, ems16_tqi_min, data = df_sample) + geom_smooth()
+#plot(df$seq_num, df$ems16_tqi_min, type="l", ylab="ems16_tqi_min", xlab="time(sec)")
+```
+
+###### 연속형 변수 시계열 탐색
+```{r, plot, fig.width=2, fig.height=2, message=FALSE}
+# timeseries multiple plot
+# par(pch=22, col="red") # plotting symbol and color 
+graphics.off()    # close graphics windows
+# 20 of 227 plots on one page
+par(mfrow=c(5, 4), mar = c(2, 2, 2, 1), oma = c(0, 0, 1, 0)) 
+signals = names(df_sample)
+
+for(i in 218:233){ 
+  signal_ts <- df_sample[,i]
+  plot.ts(signal_ts, type="l", main=signals[i]) 
+}
+
+```
+![multi plot](./plot.ts.png)
+
+###### 2차 가공 테이블
+ - drv_rg_log_ps_avn4_rc_factor : 연속형 변수 범주화
+
+
+전체 변수들에 대한 조합의 빈도수가 높지 않아 불필요한 변수 제거해야함.
+
+###### NULL 변수 검사
+
+```{r}
+# NA Column check
+for(i in 7:length(signals)){ 
+  if(is.na(df_sample[100, i])){
+    print(names(df_sample)[i])
+  }
+}
+```
+
+###### engfrzfrm12 변수그룹 제외(NULL 만 들어있음)
+
+변수그룹 | 전체 NULL(건수) | 전체 NULL(비율) | UM NULL(건수) | UM NULL(비율)
+---- | ---- | ---- | ---- | ----
+engfrzfrm12 | 61,972,965 | `r 61972965/61972965*100`% | 36,321,553 | 100%
+ems19 | 25,649,491 | `r 25649491/61972965*100`% | 0 | 0%
+fatc11 | 25,650,803 | `r 25650803/61972965*100`% | 1,312 | `r 1312/36321553*100`%
+bat11 | 25,650,996 | `r 25650996/61972965*100`% | 1,505 | `r 1505/36321553*100`%
+cgw1 |  26,613,289 | `r 26613289/61972965*100`%  | 963,797 | `r 963797/36321553*100`%
+
+... ...
+
+###### Checksum 변수 제외
+- ems19_cf_ems_checksumems9
+- ems16_checksum
+- fatc11_cf_fatc_chksum
+- tcu11_cf_tcu_chksum1
+- sas11_checksum
+- tcu12_cf_tcu_chksum
+- tcu13_cf_tcu_chksum3 
+
+
+###### UM 변수 리스트만 남기고 제외(2014.7.22 기준)
+- ems11_ratio_tqi_bas_max_stnd 
+- ems19_cf_ems_brkreq 
+- ems19_cf_ems_dnshftreq 
+- ems19_cf_ems_aafopenreq 
+- ems19_cf_ems_decelreq 
+- ems19_cr_ems_bstpre 
+- ems19_cr_ems_engoiltemp 
+- ems19_cf_ems_modeledambtemp 
+- ems19_cf_ems_opsfail 
+- ems19_cf_ems_alivecounterems9 
+- cgw1_cf_gway_ignsw 
+- cgw1_cf_gway_rkecmd 
+- cgw1_cf_gway_drvkeylocksw 
+- cgw1_cf_gway_drvkeyunlocksw 
+- cgw1_cf_gway_drvdrsw 
+- cgw1_cf_gway_drvseatbeltsw 
+- cgw1_cf_gway_trunktgsw 
+- cgw1_cf_gway_astseatbeltsw 
+- cgw1_cf_gway_hoodsw 
+- cgw1_cf_gway_turnsiglh 
+- cgw1_cf_gway_wiperintt 
+- cgw1_cf_gway_wiperintsw 
+- cgw1_cf_gway_wiperlowsw 
+- cgw1_cf_gway_wiperhighsw 
+- cgw1_cf_gway_wiperautosw 
+- cgw1_cf_gway_rainsnsstate 
+- cgw1_cf_gway_hazardsw 
+- cgw1_cf_gway_astdrsw 
+- cgw1_cf_gway_defoggerrly 
+- cgw1_cf_gway_alightstat 
+- cgw1_cf_gway_lightswstate 
+- cgw1_cf_gway_frt_fog_act 
+- cgw1_cf_gway_tsiglhsw 
+- cgw1_cf_gway_tsigrhsw 
+- cgw1_cf_gway_drivetypeoption 
+- cgw1_cf_gway_passiveaccesslock 
+- cgw1_cf_gway_passiveaccessunlock 
+- cgw1_cf_gway_passingsw 
+- cgw1_cf_gway_hlphighsw 
+- cgw1_cf_gway_inhibitrmt 
+- cgw1_c_sunroofopenstate 
+- cgw1_cf_gway_parkbrakesw 
+- cgw1_cf_gway_turnsigrh
+- tcu11_tcu_type 
+- tcu11_swi_gs 
+- tcu11_gear_type 
+- esp12_yaw_rate 
+- esp12_yaw_rate_stat 
+- esp12_yaw_rate_diag 
+- sas11_sas_speed 
+- sas11_sas_stat 
+- sas11_msgcount
+- tcu12_n_inc_tcu 
+- tcu12_spk_rtd_tcu 
+- tcu12_vs_tcu_decimal 
+- ems11_ratio_tqi_bas_max_stnd 
+- ems15_fa_pv_can 
+- ems15_intairtemp 
+- ems15_state_dc_obd 
+- ems15_inh_dc_obd 
+- ems15_ctr_ig_cyc_obd 
+- ems15_ctr_cdn_obd 
+- ems14_im_autehn 
+- ems14_l_mil 
+- ems14_im_stat 
+- ems14_amp_can 
+- ems14_bat_alt_fr_duty 
+- ems14_vb 
+- tcu13_cf_tcu_inhvis 
+- tcu13_cf_tcu_prelreq 
+- tcu13_cf_tcu_itphase 
+- tcu13_cf_tcu_actecordy 
+- tcu13_cf_tcu_tqgrdlim 
+- tcu13_cr_tcu_isgtgtrpm 
+- tcu13_cf_tcu_sptrdy 
+- tcu13_cf_tcu_bkeonreq 
+- tcu13_n_tgt_lup 
+
+###### ems, tcu 계열만 남기고 제외
+- fatc11_cr_fatc_tqacnout 
+- fatc11_cf_fatc_acnrqswi 
+- fatc11_cf_fatc_acncltenrq 
+- fatc11_cf_fatc_ecvflt 
+- fatc11_cf_fatc_blwron 
+- fatc11_cf_fatc_iden 
+- fatc11_cf_fatc_blwrmax 
+- fatc11_cf_fatc_engstartreq 
+- fatc11_cf_fatc_isgstopreq 
+- fatc11_cf_fatc_ctrinf 
+- fatc11_cf_fatc_msgcnt 
+- fatc11_cr_fatc_outtemp 
+- fatc11_cr_fatc_outtempsns 
+- fatc11_cf_fatc_compload 
+- fatc11_cf_fatc_activeeco 
+- fatc11_cf_fatc_autoactivation 
+- fatc11_cf_fatc_defsw 
+- fatc11_cf_fatc_ptcrlystat 
+- bat11_bat_snsr_i 
+- bat11_bat_soc 
+- bat11_bat_snsr_v 
+- bat11_bat_snsr_temp 
+- bat11_bat_snsr_state 
+- bat11_bat_soh 
+- bat11_bat_snsr_invalid 
+- bat11_bat_sof 
+- bat11_bat_snsr_error 
+- cgw1_cf_gway_smkoption 
+- cgw1_cf_gway_headlamplow 
+- cgw1_cf_gway_headlamphigh 
+- cgw1_cf_gway_starterrlystate 
+- esp12_lat_accel 
+- esp12_lat_accel_stat 
+- esp12_lat_accel_diag 
+- esp12_long_accel 
+- esp12_long_accel_stat 
+- esp12_long_accel_diag 
+- esp12_cyl_pres 
+- esp12_cyl_pres_stat 
+- esp12_cyl_press_diag 
+- sas11_sas_angle 
+
+
+###### 3차 가공 테이블 
+ - drv_rg_log_ps_avn4_rc_factor_cnt : 차종별 전체 변수 조합별 빈도수
+
+차종 | 엔진구분 |  동일조합 최대개수 | 동일조합 최소개수 | 레코드 수
+--- | --- | --- | --- | ---
+AG  | G	| 26771	| 1	| 188828
+DM	| D	| 434649	| 1	| 39757
+KH	| G	| 620	| 1	| 17360
+TL	| D	| 9	| 1	| 1352
+UM	| D	| 29248	| 1	| 3035048
+
+###### 조합 그룹핑한 데이터 가져오기
+```{r}
+#install.packages("Hmisc")
+library("Hmisc")
+
+df_um = data.frame(sqlQuery( conn, "select * from vcrm_6442267.drv_rg_log_ps_avn4_rc_factor_cnt
+                                 where sale_vehl_cd = 'UM'"))
+summary_um <- summary(df_um)
+desc_um <- describe(df_um)
+library(ggplot2)
+ggplot(data=df_um, aes(x=y=cnt)) + guides(fill=F) +
+    geom_boxplot() + stat_boxplot(geom ='errorbar') +
+    ylab('combination count') + xlab('combination') + 
+    ggtitle('A') +
+    geom_jitter(alpha=0.10)
+
+odbcClose(conn)
+```
+
+
+
+
+
+
+
